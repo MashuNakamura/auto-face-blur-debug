@@ -1,0 +1,9 @@
+--index-url https://download.pytorch.org/whl/cu118
+torch==2.7.1+cu118
+torchvision==0.22.1+cu118
+ultralytics==8.3.0
+opencv-python==4.10.0.84
+numpy<2.0
+deepface
+tensorflow==2.16.1
+nvidia-cudnn-cu12==8.9.7.29

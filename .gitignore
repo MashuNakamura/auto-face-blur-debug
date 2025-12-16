@@ -1,0 +1,40 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+ENV/
+*. pyc
+__pycache__/
+
+# IDE
+.vscode/
+.idea/
+*. swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model files (optional - kalau model besar)
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.pb
+
+# Dataset/Images (optional)
+whitelist/
+dataset/
+*. jpg
+*.jpeg
+*.png
+*.bmp
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp
