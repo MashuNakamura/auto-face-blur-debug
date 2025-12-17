@@ -1,30 +1,23 @@
 #!/usr/bin/env python3
 """
-ARCFACE - REALTIME WEBCAM TEST (CPU MODE ONLY)
+YOLO BACKBONE - REALTIME WEBCAM TEST (GPU MODE ONLY)
 ---------------------------------------------------
-Detektor    : YOLOv11n (CPU)
-Vektorisasi : ArcFace (CPU via TensorFlow)
+Detektor    : YOLOv11n (GPU)
+Vektorisasi :   YOLO Internal Backbone (Layer 9 - SPPF)
 Fitur       : Auto-Blur Unknown, Real-time FPS, Face Tracking, Embedding Cache
 """
 
 import os
 import time
-import warnings
 import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
-from deepface import DeepFace
-
-# FORCE CPU
-os. environ['CUDA_VISIBLE_DEVICES'] = '-1'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-warnings. filterwarnings('ignore')
 
 # ============================================================
 # CONFIG
 # ============================================================
-THRESHOLD = 0.50
+THRESHOLD = 0.35
 INPUT_RES = (640, 480)
 WHITELIST_DIR = "../whitelist/"
 PATH_YOLO_MODEL = "../model/model.pt"
@@ -42,38 +35,29 @@ max_fps_samples = 300
 # ============================================================
 # SETUP
 # ============================================================
-device = torch.device("cpu")
-print(f"[*] MODE: CPU ONLY")
-print(f"[*] PyTorch Device: {device}")
-print(f"[*] TensorFlow:  CPU mode (GPU disabled)")
+device = torch.device("cuda")
+print(f"[*] MODE: GPU ONLY")
+print(f"[*] Device: {device}")
+print(f"[*] CUDA Available: {torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"[*] GPU:   {torch.cuda.get_device_name(0)}")
+else:
+    print("[!] ERROR: CUDA not available!")
+    exit(1)
 
-CAM_INDEX = int(input("Pilih kamera (0,1,2,...): ") or 0)
+CAM_INDEX = int(input("Pilih kamera (0,1,2,...   ): ") or 0)
 
 # Load YOLO
 print("Loading YOLO model...")
 yolo_model = YOLO(PATH_YOLO_MODEL)
 yolo_model.to(device)
-print(f"✓ YOLO loaded on CPU")
-
-# Pre-load ArcFace
-print("Pre-loading ArcFace model...")
-dummy = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
-try:
-    DeepFace.represent(
-        img_path=dummy,
-        model_name="ArcFace",
-        enforce_detection=False,
-        detector_backend="skip"
-    )
-    print("✓ ArcFace loaded on CPU")
-except Exception as e:
-    print(f"ERROR: {e}")
-    exit(1)
+print(f"✓ YOLO loaded on GPU")
 
 # ============================================================
 # EMBEDDING CACHE SYSTEM
 # ============================================================
 embedding_cache = {}
+
 
 def get_box_key(box):
     x1 = int(box[0] / 10) * 10
@@ -81,6 +65,7 @@ def get_box_key(box):
     x2 = int(box[2] / 10) * 10
     y2 = int(box[3] / 10) * 10
     return f"{x1}_{y1}_{x2}_{y2}"
+
 
 def get_cached_embedding(box, current_time):
     box_key = get_box_key(box)
@@ -93,12 +78,14 @@ def get_cached_embedding(box, current_time):
             del embedding_cache[box_key]
     return None
 
+
 def cache_embedding(box, embedding, current_time):
     box_key = get_box_key(box)
     embedding_cache[box_key] = {
         'embedding': embedding,
         'timestamp': current_time
     }
+
 
 def clean_old_cache(current_time):
     expired_keys = []
@@ -108,39 +95,40 @@ def clean_old_cache(current_time):
     for key in expired_keys:
         del embedding_cache[key]
 
+
 # ============================================================
 # EMBEDDING FUNCTION
 # ============================================================
+@torch.no_grad()
 def get_embedding(img_bgr):
+    """Extract embedding from YOLO backbone layer 9 (SPPF)"""
     if img_bgr is None or img_bgr.size == 0:
         return None
     try:
-        rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        if rgb.dtype != np. uint8:
-            rgb = rgb.astype(np.uint8)
-        h, w = rgb.shape[:2]
-        if h < 224 or w < 224:
-            scale = 224 / min(h, w)
-            new_h, new_w = int(h * scale), int(w * scale)
-            rgb = cv2.resize(rgb, (new_w, new_h))
-        result = DeepFace.represent(
-            img_path=rgb,
-            model_name="ArcFace",
-            enforce_detection=False,
-            detector_backend="skip"
-        )
-        if result and len(result) > 0 and "embedding" in result[0]:
-            embedding = np. array(result[0]["embedding"])
-            return embedding / np.linalg.norm(embedding)
+        inp = cv2.resize(img_bgr, (128, 128))
+        tensor = torch.from_numpy(inp).float().to(device) / 255.0
+        tensor = tensor.permute(2, 0, 1).unsqueeze(0)
+
+        x = tensor
+        for i, layer in enumerate(yolo_model.model.model):
+            x = layer(x)
+            if i == 9:
+                break
+
+        emb = torch.mean(x, dim=(2, 3)).flatten()
+        return (emb / emb.norm()).cpu().numpy()
     except Exception:
         pass
     return None
 
+
 def get_distance(emb1, emb2):
-    return 1 - np.dot(emb1, emb2) / (np.linalg. norm(emb1) * np.linalg.norm(emb2))
+    return 1 - np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
+
 
 def blur_face(face_img):
     return cv2.GaussianBlur(face_img, (51, 51), 30)
+
 
 def calculate_box_distance(box1, box2):
     x1_center = (box1[0] + box1[2]) / 2
@@ -149,6 +137,7 @@ def calculate_box_distance(box1, box2):
     y2_center = (box2[1] + box2[3]) / 2
     distance = ((x1_center - x2_center) ** 2 + (y1_center - y2_center) ** 2) ** 0.5
     return distance
+
 
 def match_faces_to_previous(new_detections, previous_faces):
     matched_faces = []
@@ -174,9 +163,10 @@ def match_faces_to_previous(new_detections, previous_faces):
                 'box': new_detection,
                 'status': False,
                 'score': 1.0,
-                'needs_recognition':  True
+                'needs_recognition': True
             })
     return matched_faces
+
 
 # ============================================================
 # LOAD WHITELIST
@@ -189,7 +179,7 @@ if not os.path.exists(WHITELIST_DIR):
     print("WARNING: Whitelist folder empty")
 
 for fname in os.listdir(WHITELIST_DIR):
-    if fname.lower().endswith(('.jpg', '.jpeg', '. png', '.bmp')):
+    if fname.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
         path = os.path.join(WHITELIST_DIR, fname)
         img = cv2.imread(path)
         if img is not None:
@@ -204,8 +194,8 @@ for fname in os.listdir(WHITELIST_DIR):
                         print(f"  ✓ {fname}")
                     break
 
-target_embeddings = np. array(target_embeddings)
-print(f"Total: {len(target_embeddings)} embeddings loaded\n")
+target_embeddings = np.array(target_embeddings)
+print(f"Total:   {len(target_embeddings)} embeddings loaded\n")
 
 # ============================================================
 # MAIN LOOP
@@ -221,24 +211,24 @@ cache_misses = 0
 current_faces = []
 
 print("=" * 50)
-print("ARCFACE - CPU MODE")
+print("YOLO BACKBONE - GPU MODE")
 print("=" * 50)
 print(" KONFIGURASI:")
-print(f" YOLO Detection: Setiap {YOLO_SKIP_FRAMES} frame")
+print(f" YOLO Detection:   Setiap {YOLO_SKIP_FRAMES} frame")
 print(f" Face Recognition: Setiap {EMBEDDING_SKIP_FRAMES} frame")
 print(f" Tracking Distance: {TRACKING_DISTANCE_THRESHOLD} pixels")
-print(f" Cache Max Age: {CACHE_MAX_AGE} seconds")
+print(f" Cache Max Age:  {CACHE_MAX_AGE} seconds")
 print("")
 print(" KONTROL:")
-print(" [1] : Set YOLO setiap 1 frame")
-print(" [5] : Set YOLO setiap 5 frame")
-print(" [0] : Set YOLO setiap 10 frame")
-print(" [c] : Clear embedding cache")
-print(" [q] : Keluar")
+print(" [1]:   Set YOLO setiap 1 frame")
+print(" [5]:  Set YOLO setiap 5 frame")
+print(" [0]: Set YOLO setiap 10 frame")
+print(" [c]: Clear embedding cache")
+print(" [q]: Keluar")
 print("=" * 50 + "\n")
 
 while True:
-    ret, frame = cap. read()
+    ret, frame = cap.read()
     if not ret:
         break
 
@@ -266,7 +256,7 @@ while True:
         for result in results:
             for box in result.boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                h, w = sframe.shape[: 2]
+                h, w = sframe.shape[:2]
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(w, x2), min(h, y2)
                 if (x2 - x1) > 10 and (y2 - y1) > 10:
@@ -320,8 +310,8 @@ while True:
     cache_ratio = cache_hits / (cache_hits + cache_misses) if (cache_hits + cache_misses) > 0 else 0
     avg_fps = np.mean(fps_history) if fps_history else 0
 
-    info_str = f"[CPU] ArcFace | FPS: {fps:.1f} (Avg: {avg_fps:.1f}) | Cache: {len(embedding_cache)}"
-    timing_str = f"YOLO:  {yolo_status} | EMBED: {embedding_status} | Hit Rate: {cache_ratio:.1%}"
+    info_str = f"[GPU] YOLO-Backbone | FPS: {fps:.1f} (Avg: {avg_fps:.1f}) | Cache:  {len(embedding_cache)}"
+    timing_str = f"YOLO: {yolo_status} | EMBED:   {embedding_status} | Hit Rate: {cache_ratio:.1%}"
 
     cv2.rectangle(display_frame, (0, 0), (640, 55), (0, 0, 0), -1)
     cv2.putText(display_frame, info_str, (10, 20),
@@ -329,20 +319,20 @@ while True:
     cv2.putText(display_frame, timing_str, (10, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1)
 
-    cv2.imshow("ArcFace - CPU Mode", display_frame)
+    cv2.imshow("YOLO Backbone - GPU Mode", display_frame)
 
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
         break
     elif key == ord('1'):
         YOLO_SKIP_FRAMES = 1
-        print(f"\n--- YOLO Timing:  Setiap {YOLO_SKIP_FRAMES} frame ---")
+        print(f"\n--- YOLO Timing:   Setiap {YOLO_SKIP_FRAMES} frame ---")
     elif key == ord('5'):
         YOLO_SKIP_FRAMES = 5
-        print(f"\n--- YOLO Timing: Setiap {YOLO_SKIP_FRAMES} frame ---")
+        print(f"\n--- YOLO Timing:  Setiap {YOLO_SKIP_FRAMES} frame ---")
     elif key == ord('0'):
         YOLO_SKIP_FRAMES = 10
-        print(f"\n--- YOLO Timing: Setiap {YOLO_SKIP_FRAMES} frame ---")
+        print(f"\n--- YOLO Timing:  Setiap {YOLO_SKIP_FRAMES} frame ---")
     elif key == ord('c'):
         embedding_cache.clear()
         cache_hits = 0
@@ -356,7 +346,7 @@ cv2.destroyAllWindows()
 # PERFORMANCE SUMMARY
 # ============================================================
 print("\n" + "=" * 60)
-print("PERFORMANCE SUMMARY - ARCFACE CPU MODE")
+print("PERFORMANCE SUMMARY - YOLO BACKBONE GPU MODE")
 print("=" * 60)
 
 avg_fps = np.mean(fps_history) if fps_history else 0
@@ -364,20 +354,21 @@ cache_hit_rate = (cache_hits / (cache_hits + cache_misses) * 100) if (cache_hits
 
 print(f"\n{'Metric':<25} {'Value':<20}")
 print("-" * 60)
-print(f"{'Model':<25} {'ArcFace': <20}")
-print(f"{'Device':<25} {'CPU':<20}")
+print(f"{'Model':<25} {'YOLO Backbone':<20}")
+print(f"{'Device':<25} {'GPU':<20}")
 print(f"{'Average FPS':<25} {avg_fps:<20.1f}")
 print(f"{'YOLO Skip Frames':<25} {YOLO_SKIP_FRAMES:<20}")
 print(f"{'Embedding Skip Frames':<25} {EMBEDDING_SKIP_FRAMES:<20}")
-print(f"{'Cache Hit Rate':<25} {cache_hit_rate: <20.1f}%")
+print(f"{'Cache Hit Rate':<25} {cache_hit_rate:<20.1f}%")
 print(f"{'Total Frames Processed':<25} {frame_count:<20}")
-print(f"{'Cache Hits': <25} {cache_hits:<20}")
-print(f"{'Cache Misses':<25} {cache_misses:<20}")
+print(f"{'Cache Hits':<25} {cache_hits:<20}")
+print(f"{'Cache Misses': <25} {cache_misses: <20}")
 
 print("\n" + "=" * 60)
 print("MARKDOWN TABLE FORMAT:")
 print("=" * 60)
-print("\n| Model   | Device | Avg FPS | YOLO Skip | Embed Skip | Cache Hit Rate (%) |")
-print("|---------|--------|---------|-----------|------------|--------------------|")
-print(f"| ArcFace | CPU    | {avg_fps:.1f}    | {YOLO_SKIP_FRAMES:<9} | {EMBEDDING_SKIP_FRAMES:<10} | {cache_hit_rate:.1f}%               |")
+print("\n| Model         | Device | Avg FPS | YOLO Skip | Embed Skip | Cache Hit Rate (%) |")
+print("|---------------|--------|---------|-----------|------------|--------------------|")
+print(
+    f"| YOLO Backbone | GPU    | {avg_fps:.1f}    | {YOLO_SKIP_FRAMES:<9} | {EMBEDDING_SKIP_FRAMES:<10} | {cache_hit_rate:.1f}%               |")
 print("\n")

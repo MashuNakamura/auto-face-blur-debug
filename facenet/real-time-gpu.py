@@ -1,30 +1,24 @@
 #!/usr/bin/env python3
 """
-ARCFACE - REALTIME WEBCAM TEST (CPU MODE ONLY)
+FACENET - REALTIME WEBCAM TEST (GPU MODE ONLY)
 ---------------------------------------------------
-Detektor    : YOLOv11n (CPU)
-Vektorisasi : ArcFace (CPU via TensorFlow)
+Detektor    : YOLOv11n (GPU)
+Vektorisasi : FaceNet (InceptionResnetV1 - VGGFace2)
 Fitur       : Auto-Blur Unknown, Real-time FPS, Face Tracking, Embedding Cache
 """
 
 import os
 import time
-import warnings
 import cv2
 import numpy as np
 import torch
 from ultralytics import YOLO
-from deepface import DeepFace
-
-# FORCE CPU
-os. environ['CUDA_VISIBLE_DEVICES'] = '-1'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-warnings. filterwarnings('ignore')
+from facenet_pytorch import InceptionResnetV1
 
 # ============================================================
 # CONFIG
 # ============================================================
-THRESHOLD = 0.50
+THRESHOLD = 0.38
 INPUT_RES = (640, 480)
 WHITELIST_DIR = "../whitelist/"
 PATH_YOLO_MODEL = "../model/model.pt"
@@ -42,33 +36,26 @@ max_fps_samples = 300
 # ============================================================
 # SETUP
 # ============================================================
-device = torch.device("cpu")
-print(f"[*] MODE: CPU ONLY")
-print(f"[*] PyTorch Device: {device}")
-print(f"[*] TensorFlow:  CPU mode (GPU disabled)")
+device = torch.device("cuda")
+print(f"[*] MODE: GPU ONLY")
+print(f"[*] Device: {device}")
+print(f"[*] CUDA Available: {torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"[*] GPU:  {torch.cuda.get_device_name(0)}")
+else:
+    print("[!] ERROR: CUDA not available!")
+    exit(1)
 
 CAM_INDEX = int(input("Pilih kamera (0,1,2,...): ") or 0)
 
-# Load YOLO
-print("Loading YOLO model...")
+# Load models
+print("Loading models...")
 yolo_model = YOLO(PATH_YOLO_MODEL)
 yolo_model.to(device)
-print(f"✓ YOLO loaded on CPU")
 
-# Pre-load ArcFace
-print("Pre-loading ArcFace model...")
-dummy = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
-try:
-    DeepFace.represent(
-        img_path=dummy,
-        model_name="ArcFace",
-        enforce_detection=False,
-        detector_backend="skip"
-    )
-    print("✓ ArcFace loaded on CPU")
-except Exception as e:
-    print(f"ERROR: {e}")
-    exit(1)
+facenet_model = InceptionResnetV1(pretrained='vggface2', classify=False).to(device)
+facenet_model.eval()
+print(f"✓ Models loaded on GPU")
 
 # ============================================================
 # EMBEDDING CACHE SYSTEM
@@ -111,33 +98,23 @@ def clean_old_cache(current_time):
 # ============================================================
 # EMBEDDING FUNCTION
 # ============================================================
+@torch.no_grad()
 def get_embedding(img_bgr):
     if img_bgr is None or img_bgr.size == 0:
         return None
     try:
-        rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        if rgb.dtype != np. uint8:
-            rgb = rgb.astype(np.uint8)
-        h, w = rgb.shape[:2]
-        if h < 224 or w < 224:
-            scale = 224 / min(h, w)
-            new_h, new_w = int(h * scale), int(w * scale)
-            rgb = cv2.resize(rgb, (new_w, new_h))
-        result = DeepFace.represent(
-            img_path=rgb,
-            model_name="ArcFace",
-            enforce_detection=False,
-            detector_backend="skip"
-        )
-        if result and len(result) > 0 and "embedding" in result[0]:
-            embedding = np. array(result[0]["embedding"])
-            return embedding / np.linalg.norm(embedding)
+        inp = cv2.resize(img_bgr, (160, 160))
+        inp = cv2.cvtColor(inp, cv2.COLOR_BGR2RGB)
+        tensor = torch.from_numpy(inp).float().to(device)
+        tensor = tensor / 255.0
+        tensor = tensor.permute(2, 0, 1).unsqueeze(0)
+        return facenet_model(tensor).flatten().cpu().numpy()
     except Exception:
         pass
     return None
 
 def get_distance(emb1, emb2):
-    return 1 - np.dot(emb1, emb2) / (np.linalg. norm(emb1) * np.linalg.norm(emb2))
+    return 1 - np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
 
 def blur_face(face_img):
     return cv2.GaussianBlur(face_img, (51, 51), 30)
@@ -174,7 +151,7 @@ def match_faces_to_previous(new_detections, previous_faces):
                 'box': new_detection,
                 'status': False,
                 'score': 1.0,
-                'needs_recognition':  True
+                'needs_recognition': True
             })
     return matched_faces
 
@@ -189,13 +166,13 @@ if not os.path.exists(WHITELIST_DIR):
     print("WARNING: Whitelist folder empty")
 
 for fname in os.listdir(WHITELIST_DIR):
-    if fname.lower().endswith(('.jpg', '.jpeg', '. png', '.bmp')):
+    if fname.lower().endswith(('.jpg', '.jpeg', '.png', '. bmp')):
         path = os.path.join(WHITELIST_DIR, fname)
         img = cv2.imread(path)
         if img is not None:
             results = yolo_model(img, verbose=False)
             for r in results:
-                if len(r.boxes) > 0:
+                if len(r. boxes) > 0:
                     x1, y1, x2, y2 = map(int, r.boxes[0].xyxy[0])
                     face_crop = img[y1:y2, x1:x2]
                     emb = get_embedding(face_crop)
@@ -204,8 +181,8 @@ for fname in os.listdir(WHITELIST_DIR):
                         print(f"  ✓ {fname}")
                     break
 
-target_embeddings = np. array(target_embeddings)
-print(f"Total: {len(target_embeddings)} embeddings loaded\n")
+target_embeddings = np.array(target_embeddings)
+print(f"Total:  {len(target_embeddings)} embeddings loaded\n")
 
 # ============================================================
 # MAIN LOOP
@@ -221,20 +198,20 @@ cache_misses = 0
 current_faces = []
 
 print("=" * 50)
-print("ARCFACE - CPU MODE")
+print("FACENET - GPU MODE")
 print("=" * 50)
 print(" KONFIGURASI:")
-print(f" YOLO Detection: Setiap {YOLO_SKIP_FRAMES} frame")
+print(f" YOLO Detection:  Setiap {YOLO_SKIP_FRAMES} frame")
 print(f" Face Recognition: Setiap {EMBEDDING_SKIP_FRAMES} frame")
 print(f" Tracking Distance: {TRACKING_DISTANCE_THRESHOLD} pixels")
 print(f" Cache Max Age: {CACHE_MAX_AGE} seconds")
 print("")
 print(" KONTROL:")
-print(" [1] : Set YOLO setiap 1 frame")
-print(" [5] : Set YOLO setiap 5 frame")
-print(" [0] : Set YOLO setiap 10 frame")
-print(" [c] : Clear embedding cache")
-print(" [q] : Keluar")
+print(" [1]:  Set YOLO setiap 1 frame")
+print(" [5]: Set YOLO setiap 5 frame")
+print(" [0]: Set YOLO setiap 10 frame")
+print(" [c]: Clear embedding cache")
+print(" [q]: Keluar")
 print("=" * 50 + "\n")
 
 while True:
@@ -320,8 +297,8 @@ while True:
     cache_ratio = cache_hits / (cache_hits + cache_misses) if (cache_hits + cache_misses) > 0 else 0
     avg_fps = np.mean(fps_history) if fps_history else 0
 
-    info_str = f"[CPU] ArcFace | FPS: {fps:.1f} (Avg: {avg_fps:.1f}) | Cache: {len(embedding_cache)}"
-    timing_str = f"YOLO:  {yolo_status} | EMBED: {embedding_status} | Hit Rate: {cache_ratio:.1%}"
+    info_str = f"[GPU] FaceNet | FPS: {fps:.1f} (Avg: {avg_fps:.1f}) | Cache:  {len(embedding_cache)}"
+    timing_str = f"YOLO: {yolo_status} | EMBED: {embedding_status} | Hit Rate: {cache_ratio:.1%}"
 
     cv2.rectangle(display_frame, (0, 0), (640, 55), (0, 0, 0), -1)
     cv2.putText(display_frame, info_str, (10, 20),
@@ -329,7 +306,7 @@ while True:
     cv2.putText(display_frame, timing_str, (10, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1)
 
-    cv2.imshow("ArcFace - CPU Mode", display_frame)
+    cv2.imshow("FaceNet - GPU Mode", display_frame)
 
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
@@ -356,7 +333,7 @@ cv2.destroyAllWindows()
 # PERFORMANCE SUMMARY
 # ============================================================
 print("\n" + "=" * 60)
-print("PERFORMANCE SUMMARY - ARCFACE CPU MODE")
+print("PERFORMANCE SUMMARY - FACENET GPU MODE")
 print("=" * 60)
 
 avg_fps = np.mean(fps_history) if fps_history else 0
@@ -364,14 +341,14 @@ cache_hit_rate = (cache_hits / (cache_hits + cache_misses) * 100) if (cache_hits
 
 print(f"\n{'Metric':<25} {'Value':<20}")
 print("-" * 60)
-print(f"{'Model':<25} {'ArcFace': <20}")
-print(f"{'Device':<25} {'CPU':<20}")
-print(f"{'Average FPS':<25} {avg_fps:<20.1f}")
-print(f"{'YOLO Skip Frames':<25} {YOLO_SKIP_FRAMES:<20}")
-print(f"{'Embedding Skip Frames':<25} {EMBEDDING_SKIP_FRAMES:<20}")
-print(f"{'Cache Hit Rate':<25} {cache_hit_rate: <20.1f}%")
+print(f"{'Model':<25} {'FaceNet':<20}")
+print(f"{'Device':<25} {'GPU': <20}")
+print(f"{'Average FPS':<25} {avg_fps: <20.1f}")
+print(f"{'YOLO Skip Frames':<25} {YOLO_SKIP_FRAMES: <20}")
+print(f"{'Embedding Skip Frames':<25} {EMBEDDING_SKIP_FRAMES: <20}")
+print(f"{'Cache Hit Rate':<25} {cache_hit_rate:<20.1f}%")
 print(f"{'Total Frames Processed':<25} {frame_count:<20}")
-print(f"{'Cache Hits': <25} {cache_hits:<20}")
+print(f"{'Cache Hits':<25} {cache_hits:<20}")
 print(f"{'Cache Misses':<25} {cache_misses:<20}")
 
 print("\n" + "=" * 60)
@@ -379,5 +356,5 @@ print("MARKDOWN TABLE FORMAT:")
 print("=" * 60)
 print("\n| Model   | Device | Avg FPS | YOLO Skip | Embed Skip | Cache Hit Rate (%) |")
 print("|---------|--------|---------|-----------|------------|--------------------|")
-print(f"| ArcFace | CPU    | {avg_fps:.1f}    | {YOLO_SKIP_FRAMES:<9} | {EMBEDDING_SKIP_FRAMES:<10} | {cache_hit_rate:.1f}%               |")
+print(f"| FaceNet | GPU    | {avg_fps:.1f}    | {YOLO_SKIP_FRAMES: <9} | {EMBEDDING_SKIP_FRAMES:<10} | {cache_hit_rate:.1f}%               |")
 print("\n")

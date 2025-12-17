@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-ARCFACE - REALTIME WEBCAM TEST (CPU MODE ONLY)
+VGG-FACE - REALTIME WEBCAM TEST (GPU MODE ONLY)
 ---------------------------------------------------
-Detektor    : YOLOv11n (CPU)
-Vektorisasi : ArcFace (CPU via TensorFlow)
+Detektor    : YOLOv11n (GPU)
+Vektorisasi : VGG-Face (GPU via TensorFlow)
 Fitur       : Auto-Blur Unknown, Real-time FPS, Face Tracking, Embedding Cache
 """
 
@@ -16,23 +16,23 @@ import torch
 from ultralytics import YOLO
 from deepface import DeepFace
 
-# FORCE CPU
-os. environ['CUDA_VISIBLE_DEVICES'] = '-1'
+# FORCE GPU (NOTE: TensorFlow GPU might not work on Windows)
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-warnings. filterwarnings('ignore')
+warnings.filterwarnings('ignore')
 
 # ============================================================
 # CONFIG
 # ============================================================
-THRESHOLD = 0.50
+THRESHOLD = 0.40
 INPUT_RES = (640, 480)
 WHITELIST_DIR = "../whitelist/"
 PATH_YOLO_MODEL = "../model/model.pt"
 COLOR_KNOWN = (0, 255, 0)
 COLOR_UNKNOWN = (0, 0, 255)
 
-YOLO_SKIP_FRAMES = 2
-EMBEDDING_SKIP_FRAMES = 30
+YOLO_SKIP_FRAMES = 5
+EMBEDDING_SKIP_FRAMES = 90
 TRACKING_DISTANCE_THRESHOLD = 100
 CACHE_MAX_AGE = 15
 
@@ -42,30 +42,40 @@ max_fps_samples = 300
 # ============================================================
 # SETUP
 # ============================================================
-device = torch.device("cpu")
-print(f"[*] MODE: CPU ONLY")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"[*] MODE: GPU PREFERRED (PyTorch:  {device})")
 print(f"[*] PyTorch Device: {device}")
-print(f"[*] TensorFlow:  CPU mode (GPU disabled)")
 
-CAM_INDEX = int(input("Pilih kamera (0,1,2,...): ") or 0)
+# Check TensorFlow GPU (optional - might not work on Windows)
+import tensorflow as tf
+tf_gpus = tf.config.list_physical_devices('GPU')
+if len(tf_gpus) > 0:
+    for gpu in tf_gpus:
+        tf.config.experimental.set_memory_growth(gpu, True)
+    print(f"[*] TensorFlow GPU:  {tf_gpus[0]. name}")
+else:
+    print("[! ] WARNING: TensorFlow GPU not found!  Running on CPU")
+    print("[!] This is normal on Windows - VGG will use CPU for embeddings")
+
+CAM_INDEX = int(input("Pilih kamera (0,1,2,... ): ") or 0)
 
 # Load YOLO
 print("Loading YOLO model...")
 yolo_model = YOLO(PATH_YOLO_MODEL)
 yolo_model.to(device)
-print(f"✓ YOLO loaded on CPU")
+print(f"✓ YOLO loaded on {device}")
 
-# Pre-load ArcFace
-print("Pre-loading ArcFace model...")
+# Pre-load VGG-Face
+print("Pre-loading VGG-Face model...")
 dummy = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
 try:
-    DeepFace.represent(
+    DeepFace. represent(
         img_path=dummy,
-        model_name="ArcFace",
+        model_name="VGG-Face",
         enforce_detection=False,
         detector_backend="skip"
     )
-    print("✓ ArcFace loaded on CPU")
+    print("✓ VGG-Face loaded")
 except Exception as e:
     print(f"ERROR: {e}")
     exit(1)
@@ -116,7 +126,7 @@ def get_embedding(img_bgr):
         return None
     try:
         rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        if rgb.dtype != np. uint8:
+        if rgb.dtype != np.uint8:
             rgb = rgb.astype(np.uint8)
         h, w = rgb.shape[:2]
         if h < 224 or w < 224:
@@ -125,19 +135,19 @@ def get_embedding(img_bgr):
             rgb = cv2.resize(rgb, (new_w, new_h))
         result = DeepFace.represent(
             img_path=rgb,
-            model_name="ArcFace",
+            model_name="VGG-Face",
             enforce_detection=False,
             detector_backend="skip"
         )
         if result and len(result) > 0 and "embedding" in result[0]:
-            embedding = np. array(result[0]["embedding"])
+            embedding = np.array(result[0]["embedding"])
             return embedding / np.linalg.norm(embedding)
     except Exception:
         pass
     return None
 
 def get_distance(emb1, emb2):
-    return 1 - np.dot(emb1, emb2) / (np.linalg. norm(emb1) * np.linalg.norm(emb2))
+    return 1 - np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
 
 def blur_face(face_img):
     return cv2.GaussianBlur(face_img, (51, 51), 30)
@@ -174,7 +184,7 @@ def match_faces_to_previous(new_detections, previous_faces):
                 'box': new_detection,
                 'status': False,
                 'score': 1.0,
-                'needs_recognition':  True
+                'needs_recognition': True
             })
     return matched_faces
 
@@ -189,13 +199,13 @@ if not os.path.exists(WHITELIST_DIR):
     print("WARNING: Whitelist folder empty")
 
 for fname in os.listdir(WHITELIST_DIR):
-    if fname.lower().endswith(('.jpg', '.jpeg', '. png', '.bmp')):
+    if fname.lower().endswith(('.jpg', '.jpeg', '.png', '. bmp')):
         path = os.path.join(WHITELIST_DIR, fname)
         img = cv2.imread(path)
         if img is not None:
             results = yolo_model(img, verbose=False)
             for r in results:
-                if len(r.boxes) > 0:
+                if len(r. boxes) > 0:
                     x1, y1, x2, y2 = map(int, r.boxes[0].xyxy[0])
                     face_crop = img[y1:y2, x1:x2]
                     emb = get_embedding(face_crop)
@@ -204,8 +214,8 @@ for fname in os.listdir(WHITELIST_DIR):
                         print(f"  ✓ {fname}")
                     break
 
-target_embeddings = np. array(target_embeddings)
-print(f"Total: {len(target_embeddings)} embeddings loaded\n")
+target_embeddings = np.array(target_embeddings)
+print(f"Total:  {len(target_embeddings)} embeddings loaded\n")
 
 # ============================================================
 # MAIN LOOP
@@ -220,21 +230,25 @@ cache_hits = 0
 cache_misses = 0
 current_faces = []
 
+yolo_dev = "GPU" if device.type == "cuda" else "CPU"
+tf_device = "GPU" if len(tf_gpus) > 0 else "CPU"
+
 print("=" * 50)
-print("ARCFACE - CPU MODE")
+print("VGG-FACE - REALTIME TEST")
 print("=" * 50)
+print(f" YOLO: {yolo_dev} | VGG-Face: {tf_device}")
 print(" KONFIGURASI:")
-print(f" YOLO Detection: Setiap {YOLO_SKIP_FRAMES} frame")
+print(f" YOLO Detection:  Setiap {YOLO_SKIP_FRAMES} frame")
 print(f" Face Recognition: Setiap {EMBEDDING_SKIP_FRAMES} frame")
 print(f" Tracking Distance: {TRACKING_DISTANCE_THRESHOLD} pixels")
 print(f" Cache Max Age: {CACHE_MAX_AGE} seconds")
 print("")
 print(" KONTROL:")
-print(" [1] : Set YOLO setiap 1 frame")
-print(" [5] : Set YOLO setiap 5 frame")
-print(" [0] : Set YOLO setiap 10 frame")
-print(" [c] : Clear embedding cache")
-print(" [q] : Keluar")
+print(" [1]:  Set YOLO setiap 1 frame")
+print(" [5]: Set YOLO setiap 5 frame")
+print(" [0]: Set YOLO setiap 10 frame")
+print(" [c]: Clear embedding cache")
+print(" [q]: Keluar")
 print("=" * 50 + "\n")
 
 while True:
@@ -320,16 +334,16 @@ while True:
     cache_ratio = cache_hits / (cache_hits + cache_misses) if (cache_hits + cache_misses) > 0 else 0
     avg_fps = np.mean(fps_history) if fps_history else 0
 
-    info_str = f"[CPU] ArcFace | FPS: {fps:.1f} (Avg: {avg_fps:.1f}) | Cache: {len(embedding_cache)}"
-    timing_str = f"YOLO:  {yolo_status} | EMBED: {embedding_status} | Hit Rate: {cache_ratio:.1%}"
+    info_str = f"[YOLO:{yolo_dev}|VGG:{tf_device}] FPS:  {fps:.1f} (Avg: {avg_fps:.1f}) | Cache: {len(embedding_cache)}"
+    timing_str = f"YOLO: {yolo_status} | EMBED: {embedding_status} | Hit Rate: {cache_ratio:.1%}"
 
     cv2.rectangle(display_frame, (0, 0), (640, 55), (0, 0, 0), -1)
     cv2.putText(display_frame, info_str, (10, 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
     cv2.putText(display_frame, timing_str, (10, 40),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1)
 
-    cv2.imshow("ArcFace - CPU Mode", display_frame)
+    cv2.imshow("VGG-Face - Realtime", display_frame)
 
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
@@ -356,7 +370,7 @@ cv2.destroyAllWindows()
 # PERFORMANCE SUMMARY
 # ============================================================
 print("\n" + "=" * 60)
-print("PERFORMANCE SUMMARY - ARCFACE CPU MODE")
+print("PERFORMANCE SUMMARY - VGG-FACE")
 print("=" * 60)
 
 avg_fps = np.mean(fps_history) if fps_history else 0
@@ -364,20 +378,21 @@ cache_hit_rate = (cache_hits / (cache_hits + cache_misses) * 100) if (cache_hits
 
 print(f"\n{'Metric':<25} {'Value':<20}")
 print("-" * 60)
-print(f"{'Model':<25} {'ArcFace': <20}")
-print(f"{'Device':<25} {'CPU':<20}")
-print(f"{'Average FPS':<25} {avg_fps:<20.1f}")
-print(f"{'YOLO Skip Frames':<25} {YOLO_SKIP_FRAMES:<20}")
-print(f"{'Embedding Skip Frames':<25} {EMBEDDING_SKIP_FRAMES:<20}")
+print(f"{'Model':<25} {'VGG-Face':<20}")
+print(f"{'Device (YOLO)':<25} {yolo_dev: <20}")
+print(f"{'Device (VGG)':<25} {tf_device:<20}")
+print(f"{'Average FPS':<25} {avg_fps: <20.1f}")
+print(f"{'YOLO Skip Frames':<25} {YOLO_SKIP_FRAMES: <20}")
+print(f"{'Embedding Skip Frames':<25} {EMBEDDING_SKIP_FRAMES: <20}")
 print(f"{'Cache Hit Rate':<25} {cache_hit_rate: <20.1f}%")
 print(f"{'Total Frames Processed':<25} {frame_count:<20}")
-print(f"{'Cache Hits': <25} {cache_hits:<20}")
+print(f"{'Cache Hits':<25} {cache_hits:<20}")
 print(f"{'Cache Misses':<25} {cache_misses:<20}")
 
 print("\n" + "=" * 60)
 print("MARKDOWN TABLE FORMAT:")
 print("=" * 60)
-print("\n| Model   | Device | Avg FPS | YOLO Skip | Embed Skip | Cache Hit Rate (%) |")
-print("|---------|--------|---------|-----------|------------|--------------------|")
-print(f"| ArcFace | CPU    | {avg_fps:.1f}    | {YOLO_SKIP_FRAMES:<9} | {EMBEDDING_SKIP_FRAMES:<10} | {cache_hit_rate:.1f}%               |")
+print("\n| Model    | YOLO | VGG | Avg FPS | YOLO Skip | Embed Skip | Cache Hit Rate (%) |")
+print("|----------|------|-----|---------|-----------|------------|--------------------|")
+print(f"| VGG-Face | {yolo_dev: <4} | {tf_device:<3} | {avg_fps:. 1f}    | {YOLO_SKIP_FRAMES:<9} | {EMBEDDING_SKIP_FRAMES:<10} | {cache_hit_rate:. 1f}%               |")
 print("\n")
