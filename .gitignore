@@ -18,9 +18,9 @@ __pycache__/
 Thumbs.db
 
 # Model files (optional - kalau model besar)
-*.pt
+#*.pt
 *.pth
-*.ckpt
+#*.ckpt
 *.h5
 *.pb
 
