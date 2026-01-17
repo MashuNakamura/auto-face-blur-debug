@@ -19,6 +19,7 @@ from facenet_pytorch import InceptionResnetV1
 # CONFIG
 # ============================================================
 THRESHOLD = 0.38
+# THRESHOLD = 0.50
 INPUT_RES = (640, 480)
 WHITELIST_DIR = "../whitelist/"
 PATH_YOLO_MODEL = "../model/model.pt"
@@ -158,31 +159,56 @@ def match_faces_to_previous(new_detections, previous_faces):
 # ============================================================
 # LOAD WHITELIST
 # ============================================================
+# print("\nLoading whitelist...")
+# target_embeddings = []
+#
+# if not os.path.exists(WHITELIST_DIR):
+#     os.makedirs(WHITELIST_DIR)
+#     print("WARNING: Whitelist folder empty")
+#
+# for fname in os.listdir(WHITELIST_DIR):
+#     if fname.lower().endswith(('.jpg', '.jpeg', '.png', '. bmp')):
+#         path = os.path.join(WHITELIST_DIR, fname)
+#         img = cv2.imread(path)
+#         if img is not None:
+#             results = yolo_model(img, verbose=False)
+#             for r in results:
+#                 if len(r. boxes) > 0:
+#                     x1, y1, x2, y2 = map(int, r.boxes[0].xyxy[0])
+#                     face_crop = img[y1:y2, x1:x2]
+#                     emb = get_embedding(face_crop)
+#                     if emb is not None:
+#                         target_embeddings.append(emb)
+#                         print(f"  ✓ {fname}")
+#                     break
+#
+# target_embeddings = np.array(target_embeddings)
+# print(f"Total:  {len(target_embeddings)} embeddings loaded\n")
+
 print("\nLoading whitelist...")
 target_embeddings = []
 
-if not os.path.exists(WHITELIST_DIR):
-    os.makedirs(WHITELIST_DIR)
-    print("WARNING: Whitelist folder empty")
+for root, _, files in os.walk(WHITELIST_DIR):
+    for fname in files:
+        if fname.lower().endswith(('.jpg', '.jpeg', '.png')):
+            path = os.path.join(root, fname)
+            img = cv2.imread(path)
+            if img is None:
+                continue
 
-for fname in os.listdir(WHITELIST_DIR):
-    if fname.lower().endswith(('.jpg', '.jpeg', '.png', '. bmp')):
-        path = os.path.join(WHITELIST_DIR, fname)
-        img = cv2.imread(path)
-        if img is not None:
             results = yolo_model(img, verbose=False)
             for r in results:
-                if len(r. boxes) > 0:
+                if len(r.boxes) > 0:
                     x1, y1, x2, y2 = map(int, r.boxes[0].xyxy[0])
                     face_crop = img[y1:y2, x1:x2]
                     emb = get_embedding(face_crop)
                     if emb is not None:
                         target_embeddings.append(emb)
-                        print(f"  ✓ {fname}")
+                        print(f"  ✓ {path}")
                     break
 
 target_embeddings = np.array(target_embeddings)
-print(f"Total:  {len(target_embeddings)} embeddings loaded\n")
+print(f"Total: {len(target_embeddings)} embeddings loaded\n")
 
 # ============================================================
 # MAIN LOOP
@@ -207,7 +233,7 @@ print(f" Tracking Distance: {TRACKING_DISTANCE_THRESHOLD} pixels")
 print(f" Cache Max Age: {CACHE_MAX_AGE} seconds")
 print("")
 print(" KONTROL:")
-print(" [1]:  Set YOLO setiap 1 frame")
+print(" [1]: 11Set YOLO setiap 1 frame")
 print(" [5]: Set YOLO setiap 5 frame")
 print(" [0]: Set YOLO setiap 10 frame")
 print(" [c]: Clear embedding cache")
