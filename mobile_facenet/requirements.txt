@@ -6,4 +6,5 @@ torchvision
 ultralytics
 opencv-python
 numpy<2.0
-pyvirtualcam
+pyvirtualcamscikit-learn
+matplotlib

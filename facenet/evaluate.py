@@ -15,14 +15,17 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 from facenet_pytorch import InceptionResnetV1
+from sklearn.metrics import confusion_matrix, average_precision_score
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 
 # ============================================================
 # CONFIG
 # ============================================================
 THRESHOLD = 0.38
 INPUT_RES = (640, 480)
-WHITELIST_DIR = "../whitelist/"
-DATASET_DIR = "../dataset_uji/"
+TESTING_DIR = "../testing/"
 OUTPUT_DIR = "../output/facenet/"
 PATH_YOLO_MODEL = "../model/model.pt"
 
@@ -64,151 +67,99 @@ def get_embedding(img_bgr):
 
     return facenet_model(tensor).flatten().cpu().numpy()
 
-
 def get_distance(emb1, emb2):
     return 1 - np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2))
 
 
 # ============================================================
-# LOAD WHITELIST
-# ============================================================
-print("\nLoading whitelist...")
-target_embeddings = []
-
-for fname in os.listdir(WHITELIST_DIR):
-    if fname.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp')):
-        path = os.path.join(WHITELIST_DIR, fname)
-        img = cv2.imread(path)
-        if img is not None:
-            results = yolo_model(img, verbose=False)
-            for r in results:
-                if len(r.boxes) > 0:
-                    x1, y1, x2, y2 = map(int, r.boxes[0].xyxy[0])
-                    face_crop = img[y1:y2, x1:x2]
-                    emb = get_embedding(face_crop)
-                    if emb is not None:
-                        target_embeddings.append(emb)
-                        print(f"  ✓ {fname}")
-                    break
-
-target_embeddings = np.array(target_embeddings)
-print(f"Total: {len(target_embeddings)} embeddings\n")
-
-
-# ============================================================
 # PROCESS FUNCTION
 # ============================================================
-def process_folder(folder_name, expected_status):
-    """Process saya/ or orang_lain/ folder"""
-    folder_path = os.path.join(DATASET_DIR, folder_name)
-    if not os.path.exists(folder_path):
-        print(f"Folder {folder_name} not found, skipping...")
-        return
+def evaluate_image(image_path, target_embeddings):
+    """Process a single image and return if it's known and the score."""
+    img = cv2.imread(image_path)
+    if img is None:
+        return False, 1.0
 
-    print(f"\nProcessing:  {folder_name}/ (Expected: {expected_status})")
+    img = cv2.resize(img, INPUT_RES)
+    results = yolo_model(img, verbose=False)
 
-    files = [f for f in os.listdir(folder_path)
-             if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
-
-    correct_count = 0
-    total_count = 0
-
-    for fname in files:
-        img_path = os.path.join(folder_path, fname)
-        img = cv2.imread(img_path)
-        if img is None:
-            continue
-
-        img = cv2.resize(img, INPUT_RES)
-
-        # Detect face
-        results = yolo_model(img, verbose=False)
-
-        for r in results:
-            if len(r.boxes) == 0:
-                continue
-
+    for r in results:
+        if len(r.boxes) > 0:
             box = r.boxes[0]
             x1, y1, x2, y2 = map(int, box.xyxy[0])
-            h, w = img.shape[:2]
-            x1, y1 = max(0, x1), max(0, y1)
-            x2, y2 = min(w, x2), min(h, y2)
-
             face_img = img[y1:y2, x1:x2]
             if face_img.size == 0:
                 continue
 
-            # Recognize
-            is_known = False
-            score = 1.0
-
-            if len(target_embeddings) > 0:
-                emb = get_embedding(face_img)
-                if emb is not None:
+            emb = get_embedding(face_img)
+            if emb is not None:
+                if len(target_embeddings) > 0:
                     dists = [get_distance(t, emb) for t in target_embeddings]
                     score = min(dists)
                     if score <= THRESHOLD:
-                        is_known = True
+                        return True, score
+                else:
+                    return False, 1.0
 
-            actual_status = "Me" if is_known else "Unknown"
-            is_correct = (actual_status == expected_status)
-
-            # Visualize
-            canvas = img.copy()
-
-            # Blur if unknown
-            if not is_known:
-                try:
-                    canvas[y1:y2, x1:x2] = cv2.GaussianBlur(canvas[y1:y2, x1:x2], (51, 51), 30)
-                except:
-                    pass
-
-            # Box
-            color = (0, 255, 0) if is_known else (0, 0, 255)
-            cv2.rectangle(canvas, (x1, y1), (x2, y2), color, 2)
-
-            label = f"{actual_status} ({score:.2f})"
-            cv2.putText(canvas, label, (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
-            # Model name
-            cv2.rectangle(canvas, (0, 0), (200, 35), (0, 0, 0), -1)
-            cv2.putText(canvas, "FaceNet", (5, 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-
-            # Result
-            result_text = "BENAR" if is_correct else "SALAH"
-            result_color = (0, 255, 0) if is_correct else (0, 0, 255)
-
-            cv2.rectangle(canvas, (0, 440), (150, 480), (0, 0, 0), -1)
-            cv2.putText(canvas, result_text, (5, 465),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, result_color, 3)
-
-            # Save
-            output_path = os.path.join(OUTPUT_DIR, f"{folder_name}_{fname}")
-            cv2.imwrite(output_path, canvas)
-
-            if is_correct:
-                correct_count += 1
-            total_count += 1
-
-            print(f"  {fname}: {actual_status} ({'✓' if is_correct else '✗'})")
-            break
-
-    if total_count > 0:
-        accuracy = (correct_count / total_count) * 100
-        print(f"\nAccuracy: {correct_count}/{total_count} = {accuracy:.2f}%")
-
+    return False, 1.0
 
 # ============================================================
 # MAIN
 # ============================================================
 print("=" * 50)
-print("FACENET - BATCH EVALUATION")
+print("FACENET - BATCH EVALUATION FOR MAP AND CONFUSION MATRIX")
 print("=" * 50)
 
-process_folder("saya", "Me")
-process_folder("orang_lain", "Unknown")
+y_true = []
+y_pred = []
+y_scores = []
 
-print(f"\n✓ Results saved to:  {OUTPUT_DIR}")
-print("Done!")
+image_files = [f for f in os.listdir(TESTING_DIR) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp'))]
+
+for image_file in image_files:
+    image_path = os.path.join(TESTING_DIR, image_file)
+    print(f"Processing {image_file}...")
+
+    # 1. Test without whitelist (expected: Unknown/not-blurred)
+    is_known, score = evaluate_image(image_path, [])
+    y_true.append(0) # 0 for Unknown
+    y_pred.append(1 if is_known else 0)
+    y_scores.append(1 - score)
+
+    # 2. Test with whitelist (expected: Me/blurred)
+    img = cv2.imread(image_path)
+    if img is not None:
+        results = yolo_model(img, verbose=False)
+        for r in results:
+            if len(r.boxes) > 0:
+                x1, y1, x2, y2 = map(int, r.boxes[0].xyxy[0])
+                face_crop = img[y1:y2, x1:x2]
+                emb = get_embedding(face_crop)
+                if emb is not None:
+                    is_known, score = evaluate_image(image_path, [emb])
+                    y_true.append(1) # 1 for Me
+                    y_pred.append(1 if is_known else 0)
+                    y_scores.append(1 - score)
+                    break
+
+# Calculate Confusion Matrix
+cm = confusion_matrix(y_true, y_pred)
+print("\nConfusion Matrix:")
+print(cm)
+
+# Plot Confusion Matrix
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=['Unknown', 'Me'], yticklabels=['Unknown', 'Me'])
+plt.xlabel('Predicted')
+plt.ylabel('True')
+plt.title('Confusion Matrix')
+plt.savefig(os.path.join(OUTPUT_DIR, 'confusion_matrix.png'))
+print(f"\n✓ Confusion matrix plot saved to: {os.path.join(OUTPUT_DIR, 'confusion_matrix.png')}")
+
+
+# Calculate mAP
+map_score = average_precision_score(y_true, y_scores)
+print(f"\nMean Average Precision (mAP): {map_score:.4f}")
+
+
+print("\nDone!")

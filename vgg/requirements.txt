@@ -7,4 +7,5 @@ opencv-python
 numpy<2.0
 deepface
 tensorflow==2.16.1
-tf-keras
+tf-kerasscikit-learn
+matplotlib
