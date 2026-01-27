@@ -6,6 +6,24 @@ and is intended **for debugging purposes only**.
 
 ---
 
+## Alur Kerja: Input → Proses → Output
+
+- Input
+  - Live camera: webcam/USB camera (device index), atau IP camera (RTSP/HTTP stream)
+  - Opsional: folder whitelist berisi wajah yang tidak ingin diblur
+- Proses
+  - Tangkap frame dari sumber kamera secara real-time
+  - Deteksi wajah dengan YOLOv11n (Ultralytics) dan OpenCV
+  - Pencocokan wajah whitelist untuk mengecualikan blur
+  - Terapkan pengaburan (Gaussian blur atau pixelation) pada wajah yang tidak di-whitelist
+  - Render ke jendela preview dan/atau simpan ke berkas video
+- Output
+  - Live preview (jendela tampilan real-time)
+  - Opsional: rekaman video hasil blur (mis. `camera_blurred_<timestamp>.mp4`)
+  - Opsional: log ringkas jumlah wajah terdeteksi, diblur, dan di-whitelist
+
+---
+
 ## Pre-requisites
 
 Make sure the following folders exist **in the same directory** as this repository:
